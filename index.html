@@ -1,0 +1,73 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>SGX Dividend Tracker</title>
+  <link rel="stylesheet" href="style.css" />
+</head>
+<body>
+
+  <header>
+    <div class="header-inner">
+      <div>
+        <h1>SGX Dividend Tracker</h1>
+        <p class="subtitle">Track dividends from your Singapore equities portfolio</p>
+      </div>
+    </div>
+  </header>
+
+  <main>
+
+    <!-- Add holding -->
+    <section class="card">
+      <h2>Add holding</h2>
+      <div class="row">
+        <input type="text" id="ticker-input" placeholder="SGX ticker (e.g. 544, D05, A17U)" style="text-transform:uppercase" />
+        <input type="number" id="qty-input" placeholder="Shares held" min="1" style="max-width:160px" />
+        <button onclick="addHolding()">Add</button>
+      </div>
+      <p id="add-error" class="error-text" style="display:none"></p>
+    </section>
+
+    <!-- Summary metrics -->
+    <section id="summary-section" style="display:none">
+      <div class="metrics-grid">
+        <div class="metric">
+          <div class="metric-label">Holdings</div>
+          <div class="metric-value" id="m-holdings">0</div>
+        </div>
+        <div class="metric">
+          <div class="metric-label">TTM dividends received</div>
+          <div class="metric-value" id="m-ttm">SGD 0.00</div>
+        </div>
+        <div class="metric">
+          <div class="metric-label">Upcoming payouts</div>
+          <div class="metric-value" id="m-upcoming">SGD 0.00</div>
+        </div>
+        <div class="metric">
+          <div class="metric-label">Total payouts tracked</div>
+          <div class="metric-value" id="m-total">SGD 0.00</div>
+        </div>
+      </div>
+    </section>
+
+    <!-- Holdings -->
+    <section id="holdings-section">
+      <div id="empty-state" class="empty-state">
+        <svg width="40" height="40" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" aria-hidden="true"><rect x="3" y="3" width="18" height="18" rx="2"/><path d="M3 9h18M9 21V9"/></svg>
+        <p>Add your SGX holdings above to start tracking dividends.</p>
+        <p class="hint">Data is pulled from <a href="https://www.dividends.sg" target="_blank" rel="noopener">dividends.sg</a> via AI.</p>
+      </div>
+      <div id="holdings-grid" class="holdings-grid"></div>
+    </section>
+
+  </main>
+
+  <footer>
+    <p>Data sourced from <a href="https://www.dividends.sg" target="_blank" rel="noopener">dividends.sg</a> &middot; Built for personal use &middot; Not financial advice</p>
+  </footer>
+
+  <script src="app.js"></script>
+</body>
+</html>
