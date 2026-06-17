@@ -15,11 +15,22 @@ const CHART_COLORS = [
 // Suffix appended to H2 dataset labels so they can be filtered from the legend.
 const H2_SUFFIX = ' H2';
 
-function hexToRgba(hex, alpha) {
+// Mixes hex toward white (amount 0–1) and returns a fully opaque solid color.
+function lightenHex(hex, amount) {
   const r = parseInt(hex.slice(1, 3), 16);
   const g = parseInt(hex.slice(3, 5), 16);
   const b = parseInt(hex.slice(5, 7), 16);
-  return `rgba(${r},${g},${b},${alpha})`;
+  const mix = (ch) => Math.round(ch + (255 - ch) * amount);
+  return `rgb(${mix(r)},${mix(g)},${mix(b)})`;
+}
+
+// Mixes hex toward black (amount 0–1) and returns a fully opaque solid color.
+function darkenHex(hex, amount) {
+  const r = parseInt(hex.slice(1, 3), 16);
+  const g = parseInt(hex.slice(3, 5), 16);
+  const b = parseInt(hex.slice(5, 7), 16);
+  const mix = (ch) => Math.round(ch * (1 - amount));
+  return `rgb(${mix(r)},${mix(g)},${mix(b)})`;
 }
 
 // ── API ───────────────────────────────────────────────────────────────────────
@@ -57,6 +68,12 @@ function fmtShort(iso) {
 
 function money(n, cur = 'SGD') {
   return `${cur} ${Number(n).toLocaleString('en-US', { minimumFractionDigits:2, maximumFractionDigits:2 })}`;
+}
+
+// Per-share amounts need up to 4 decimal places (e.g. SGD 0.103) but trailing
+// zeros trimmed (e.g. 0.038 not 0.0380) — toLocaleString can't do both at once.
+function perShare(n, cur = 'SGD') {
+  return `${cur} ${parseFloat(Number(n).toFixed(4)).toString()}`;
 }
 
 function esc(s) {
@@ -230,20 +247,20 @@ async function renderChart() {
   const allYears = [...new Set([...allPeriods].map(k => k.split(' ')[0]))].sort();
   const c = getChartColors();
 
-  // H1 datasets — lighter shade, appear in legend
+  // H1 datasets — solid lighter shade, appear in legend
   const h1 = tickerList.map((ticker, i) => ({
     label: ticker,
     data: allYears.map(yr => tickerPeriods[ticker][`${yr} H1`] || 0),
-    backgroundColor: hexToRgba(CHART_COLORS[i % CHART_COLORS.length], 0.5),
+    backgroundColor: lightenHex(CHART_COLORS[i % CHART_COLORS.length], 0.35),
     borderRadius: 4,
     borderSkipped: false,
     stack: 'H1',
   }));
-  // H2 datasets — full opacity (darker), hidden from legend via filter
+  // H2 datasets — solid darker shade, hidden from legend via filter
   const h2 = tickerList.map((ticker, i) => ({
     label: ticker + H2_SUFFIX,
     data: allYears.map(yr => tickerPeriods[ticker][`${yr} H2`] || 0),
-    backgroundColor: CHART_COLORS[i % CHART_COLORS.length],
+    backgroundColor: darkenHex(CHART_COLORS[i % CHART_COLORS.length], 0.25),
     borderRadius: 4,
     borderSkipped: false,
     stack: 'H2',
@@ -388,7 +405,7 @@ function renderCard(ticker) {
         <td>${fmtDate(p.exDate)}${p.upcoming ? ' <span class="up-badge">upcoming</span>' : ''}</td>
         <td>${fmtDate(p.payDate)}</td>
         <td>${p.eligibleShares.toLocaleString()}</td>
-        <td>${esc(p.currency)} ${p.perShare.toFixed(4)}</td>
+        <td>${perShare(p.perShare, p.currency)}</td>
         <td class="amount-cell">${esc(p.currency)} ${p.received.toFixed(2)}</td>
       </tr>`).join('');
 
@@ -508,7 +525,7 @@ async function renderUpcoming() {
       <span class="up-date">${fmtShort(it.payDate)}</span>
       <span class="ticker-badge" style="font-size:10.5px">${esc(it.ticker)}</span>
       <span class="up-company">${esc(it.company)}</span>
-      <span class="up-per-share">${money(it.amount, it.currency)}/sh</span>
+      <span class="up-per-share">${perShare(it.amount, it.currency)}/sh</span>
       <span class="up-amount">${it.totalReceived > 0 ? money(it.totalReceived, it.currency) : '—'}</span>
     </div>`).join('');
 }
