@@ -32,6 +32,7 @@ async function scrapeDividends(ticker) {
   const url = `https://www.dividends.sg/view/${encodeURIComponent(ticker)}`;
   const resp = await axios.get(url, {
     timeout: 15000,
+    httpsAgent: new (require('https').Agent)({ rejectUnauthorized: false }),
     headers: {
       'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 ' +
         '(KHTML, like Gecko) Chrome/124.0 Safari/537.36',
@@ -45,12 +46,23 @@ async function scrapeDividends(ticker) {
 function parseDividendsHtml(html, ticker) {
   const $ = cheerio.load(html);
 
-  // Company name — heading looks like "CSE GLOBAL LTD (544) SGD 1.30 ..."
-  let name = '';
-  const heading = $('h4, h3, h2').first();
-  if (heading.length) {
-    name = heading.text().trim().replace(/\(\d+\).*$/, '').trim();
-  }
+  // Company name + price — H4 format:
+  // "SHENG SIONG GROUP LTD\t(OV8)\tSGD 3.17\t\n\t \n\t +0.32% +0.01"
+  let name = '', price = null, priceCurrency = 'SGD', priceChangePct = null, priceChangeAmt = null;
+  $('h4, h3, h2, h1').each((_, el) => {
+    if (name) return false; // break once found
+    const raw = $(el).text();
+    const beforeBracket = raw.split('(')[0].replace(/[\t\n\r]+/g, ' ').trim();
+    if (beforeBracket && beforeBracket.toUpperCase() !== ticker.toUpperCase()) {
+      name = beforeBracket;
+      const priceM = raw.match(/([A-Z]{3})\s+([\d.]+)/);
+      if (priceM) { priceCurrency = priceM[1]; price = parseFloat(priceM[2]); }
+      const pctM  = raw.match(/([+-][\d.]+%)/);
+      const amtM  = raw.match(/[+-][\d.]+%\s+([+-][\d.]+)/);
+      if (pctM) priceChangePct = pctM[1];
+      if (amtM) priceChangeAmt = amtM[1];
+    }
+  });
   if (!name) name = ticker;
 
   // TTM yield
@@ -80,47 +92,83 @@ function parseDividendsHtml(html, ticker) {
     payDate: headerCells.findIndex(c => c.includes('pay date'))
   };
 
+  // Build a virtual grid that resolves rowspan/colspan so every logical cell
+  // lands in the correct column index, regardless of how many columns span.
+  const colCount = headerCells.length;
+  const spanRemaining = new Array(colCount).fill(0); // rows left in active span
+  const spanValue     = new Array(colCount).fill(''); // value being carried forward
+  const grid = [];
+
   let rows = $table.find('tbody tr');
   if (!rows.length) rows = $table.find('tr').slice(1);
 
-  const dividends = [];
-  let currentYear = null;
-
   rows.each((_, row) => {
-    const cells = $(row).find('td').map((__, c) => $(c).text().trim()).get();
-    if (!cells.length) return;
+    const gridRow = new Array(colCount).fill(null);
 
-    if (col.year >= 0 && cells[col.year]) {
-      const y = parseInt(cells[col.year], 10);
-      if (!isNaN(y)) currentYear = y;
+    // Step 1 – carry forward any active rowspans into this row's cells.
+    for (let c = 0; c < colCount; c++) {
+      if (spanRemaining[c] > 0) {
+        gridRow[c] = spanValue[c];
+        spanRemaining[c]--;
+      }
     }
 
-    const amountRaw  = col.amount  >= 0 ? cells[col.amount]  : '';
-    const exDateRaw  = col.exDate  >= 0 ? cells[col.exDate]  : '';
-    const payDateRaw = col.payDate >= 0 ? cells[col.payDate] : '';
-
-    if (!exDateRaw || !/^\d{4}-\d{2}-\d{2}$/.test(exDateRaw)) return;
-
-    const amtMatch = amountRaw.match(/^([A-Z]{3})\s*([\d.]+)$/);
-    let currency = 'SGD', amount = null;
-    if (amtMatch) {
-      currency = amtMatch[1];
-      amount   = parseFloat(amtMatch[2]);
-    } else {
-      const numMatch = amountRaw.match(/([\d.]+)/);
-      if (numMatch) amount = parseFloat(numMatch[1]);
+    // Step 2 – assign actual <td> elements to the leftmost null slots in order.
+    const tds = $(row).find('td').toArray();
+    let tdIdx = 0;
+    for (let c = 0; c < colCount && tdIdx < tds.length; c++) {
+      if (gridRow[c] !== null) continue; // slot already filled by rowspan carry
+      const td   = $(tds[tdIdx++]);
+      const text = td.text().trim();
+      const rs   = parseInt(td.attr('rowspan') || '1', 10);
+      gridRow[c] = text;
+      if (rs > 1) { spanRemaining[c] = rs - 1; spanValue[c] = text; }
     }
-    if (amount === null || isNaN(amount)) return;
 
-    dividends.push({
-      year: currentYear, exDate: exDateRaw,
-      payDate: /^\d{4}-\d{2}-\d{2}$/.test(payDateRaw) ? payDateRaw : null,
-      amount, currency
-    });
+    // Replace any unfilled nulls with ''.
+    for (let c = 0; c < colCount; c++) if (gridRow[c] === null) gridRow[c] = '';
+    grid.push(gridRow);
   });
 
-  dividends.sort((a, b) => (a.exDate < b.exDate ? 1 : -1)); // newest first
-  return { name, ticker, ttmYield, dividends };
+  const dividends = [];
+
+  for (const gridRow of grid) {
+    const exDateRaw  = col.exDate  >= 0 ? gridRow[col.exDate]  : '';
+    const payDateRaw = col.payDate >= 0 ? gridRow[col.payDate] : '';
+    const amountRaw  = col.amount  >= 0 ? gridRow[col.amount]  : '';
+    const yearRaw    = col.year    >= 0 ? gridRow[col.year]    : '';
+
+    if (!exDateRaw || !/^\d{4}-\d{2}-\d{2}$/.test(exDateRaw)) continue;
+
+    const currMatch = amountRaw.match(/^([A-Z]{3})\s*/);
+    let currency = currMatch ? currMatch[1] : 'SGD';
+    const numStr = amountRaw.replace(/^[A-Z]{3}\s*/, '');
+    const amount = parseFloat(numStr);
+    if (isNaN(amount)) continue;
+
+    const year = parseInt(yearRaw, 10) || null;
+    const payDate = /^\d{4}-\d{2}-\d{2}$/.test(payDateRaw) ? payDateRaw : null;
+    dividends.push({ year, exDate: exDateRaw, payDate, amount, currency });
+  }
+
+  // Merge multiple components on the same ex-date (e.g. REITs with income + capital components).
+  const merged = [];
+  const byExDate = new Map();
+  for (const d of dividends) {
+    const key = d.exDate;
+    if (byExDate.has(key)) {
+      byExDate.get(key).amount += d.amount;
+    } else {
+      const entry = { ...d };
+      byExDate.set(key, entry);
+      merged.push(entry);
+    }
+  }
+
+  console.log(`[scraper] ${ticker}: ${dividends.length} rows → ${merged.length} dividends after merging`);
+
+  merged.sort((a, b) => (a.exDate < b.exDate ? 1 : -1)); // newest first
+  return { name, ticker, ttmYield, price, priceCurrency, priceChangePct, priceChangeAmt, dividends: merged };
 }
 
 // Serve from cache if <24h old, otherwise scrape fresh and update cache.
@@ -309,6 +357,73 @@ function lotsForTicker(db, ticker) {
     const ticker = String(req.params.ticker).trim().toUpperCase();
     db.prepare('DELETE FROM dividend_cache WHERE ticker = ?').run(ticker);
     res.json({ ok: true });
+  });
+
+  // GET upcoming ex-dates within next N days (default 90).
+  app.get('/api/upcoming', (req, res) => {
+    const days = Math.min(Math.max(parseInt(req.query.days, 10) || 90, 1), 365);
+    const today = todayISO();
+    const cutoff = new Date();
+    cutoff.setDate(cutoff.getDate() + days);
+    const cutoffISO = cutoff.toISOString().slice(0, 10);
+    try {
+      const hs = db.prepare('SELECT id, ticker FROM holdings ORDER BY created_at ASC').all();
+      const results = [];
+      for (const h of hs) {
+        const row = db.prepare('SELECT data FROM dividend_cache WHERE ticker = ?').get(h.ticker);
+        if (!row || !row.data) continue;
+        const cached = JSON.parse(row.data);
+        const lots = db.prepare('SELECT shares, price_per_share, date_bought FROM lots WHERE holding_id = ?').all(h.id);
+        for (const d of cached.dividends || []) {
+          if (d.amount == null) continue;
+          if (d.exDate <= today || d.exDate > cutoffISO) continue;
+          const eligible = lots.reduce((s, l) => (l.date_bought < d.exDate ? s + l.shares : s), 0);
+          if (eligible <= 0) continue;
+          results.push({
+            ticker: h.ticker,
+            company: cached.name,
+            exDate: d.exDate,
+            payDate: d.payDate || null,
+            amount: d.amount,
+            currency: d.currency || 'SGD',
+            sharesEligible: eligible,
+            totalReceived: eligible * d.amount
+          });
+        }
+      }
+      results.sort((a, b) => a.exDate < b.exDate ? -1 : 1);
+      res.json(results);
+    } catch (e) {
+      console.error('GET /api/upcoming error:', e.message);
+      res.status(500).json({ error: 'Failed to fetch upcoming dividends.' });
+    }
+  });
+
+  // GET per-ticker, per-half-year dividend totals for chart rendering.
+  app.get('/api/chart-data', (req, res) => {
+    try {
+      const today = todayISO();
+      const hs = db.prepare('SELECT id, ticker FROM holdings ORDER BY created_at ASC').all();
+      const out = {};
+      for (const h of hs) {
+        const row = db.prepare('SELECT data FROM dividend_cache WHERE ticker = ?').get(h.ticker);
+        if (!row || !row.data) continue;
+        const cached = JSON.parse(row.data);
+        const lots = db.prepare('SELECT shares, price_per_share, date_bought FROM lots WHERE holding_id = ?').all(h.id);
+        out[h.ticker] = { name: cached.name, periods: {} };
+        for (const d of cached.dividends || []) {
+          if (d.amount == null || d.exDate > today) continue;
+          const eligible = lots.reduce((s, l) => (l.date_bought < d.exDate ? s + l.shares : s), 0);
+          if (eligible <= 0) continue;
+          const key = periodKey(d.exDate).replace(' ', '_');
+          out[h.ticker].periods[key] = (out[h.ticker].periods[key] || 0) + eligible * d.amount;
+        }
+      }
+      res.json(out);
+    } catch (e) {
+      console.error('GET /api/chart-data error:', e.message);
+      res.status(500).json({ error: 'Failed to compute chart data.' });
+    }
   });
 
   app.listen(PORT, () => {
