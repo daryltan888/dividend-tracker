@@ -1,0 +1,50 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Sign Up — SGX Dividend Tracker</title>
+  <link rel="stylesheet" href="style.css" />
+</head>
+<body class="auth-body">
+  <div class="auth-card">
+    <div class="auth-brand">
+      <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+        <polyline points="22 7 13.5 15.5 8.5 10.5 2 17"/>
+        <polyline points="16 7 22 7 22 13"/>
+      </svg>
+      <span>SGX Dividend Tracker</span>
+    </div>
+    <h1 class="auth-title">Create your account</h1>
+    <p class="auth-sub">Start tracking your SGX dividends</p>
+
+    <form id="register-form" class="auth-form" novalidate>
+      <div class="field">
+        <label class="field-label" for="name">Name</label>
+        <input type="text" id="name" class="field-input" autocomplete="name" required />
+      </div>
+      <div class="field">
+        <label class="field-label" for="email">Email</label>
+        <input type="email" id="email" class="field-input" autocomplete="email" required />
+      </div>
+      <div class="field">
+        <label class="field-label" for="password">Password</label>
+        <input type="password" id="password" class="field-input" autocomplete="new-password" minlength="8" required />
+      </div>
+      <div class="field">
+        <label class="field-label" for="confirm">Confirm Password</label>
+        <input type="password" id="confirm" class="field-input" autocomplete="new-password" minlength="8" required />
+      </div>
+      <p id="auth-error" class="modal-error" style="display:none"></p>
+      <button type="submit" class="btn btn-primary btn-lg auth-submit" id="register-btn">
+        <span id="register-label">Create Account</span>
+        <span id="register-spin" class="spin" style="display:none" aria-hidden="true">↻</span>
+      </button>
+    </form>
+
+    <p class="auth-switch">Already have an account? <a href="/login.html">Log in</a></p>
+  </div>
+
+  <script src="register.js"></script>
+</body>
+</html>

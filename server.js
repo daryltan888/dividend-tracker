@@ -1,17 +1,38 @@
 'use strict';
 
-const path      = require('path');
-const express   = require('express');
-const axios     = require('axios');
-const cheerio   = require('cheerio');
-const dbPromise = require('./database'); // Promise<Db>
+require('dotenv').config();
+
+const path         = require('path');
+const express      = require('express');
+const axios        = require('axios');
+const cheerio      = require('cheerio');
+const bcrypt       = require('bcryptjs');
+const jwt          = require('jsonwebtoken');
+const cookieParser = require('cookie-parser');
+const dbPromise     = require('./database'); // Promise<Db>
 
 const app  = express();
 const PORT = process.env.PORT || 3000;
 const CACHE_TTL_MS = 24 * 60 * 60 * 1000; // 24 hours
+const JWT_SECRET = process.env.JWT_SECRET;
+if (!JWT_SECRET) throw new Error('JWT_SECRET environment variable is required.');
 
 app.use(express.json());
+app.use(cookieParser());
 app.use(express.static(path.join(__dirname, 'public')));
+
+// ── Auth middleware ───────────────────────────────────────────────────────────
+function requireAuth(req, res, next) {
+  const token = req.cookies && req.cookies.token;
+  if (!token) return res.status(401).json({ error: 'Not authenticated.' });
+  try {
+    const payload = jwt.verify(token, JWT_SECRET);
+    req.user = { id: payload.id, name: payload.name, email: payload.email };
+    next();
+  } catch (e) {
+    return res.status(401).json({ error: 'Invalid or expired session.' });
+  }
+}
 
 // ── Date helpers ──────────────────────────────────────────────────────────────
 // Ex-dates and lot dates are both ISO "YYYY-MM-DD", so lexicographic string
@@ -248,15 +269,15 @@ function computeAnalysis(lots, dividends) {
 // ── DB query helpers ──────────────────────────────────────────────────────────
 const LOT_COLS = 'id, holding_id, shares, price_per_share, date_bought, created_at';
 
-function getHoldingById(db, id) {
-  const h = db.prepare('SELECT id, ticker, created_at FROM holdings WHERE id = ?').get(id);
+function getHoldingById(db, id, userId) {
+  const h = db.prepare('SELECT id, ticker, created_at FROM holdings WHERE id = ? AND user_id = ?').get(id, userId);
   if (!h) return null;
   const lots = db.prepare(`SELECT ${LOT_COLS} FROM lots WHERE holding_id = ? ORDER BY date_bought ASC, id ASC`).all(id);
   return { ...h, lots, cost: costBasis(lots) };
 }
 
-function lotsForTicker(db, ticker) {
-  const h = db.prepare('SELECT id FROM holdings WHERE ticker = ?').get(ticker);
+function lotsForTicker(db, ticker, userId) {
+  const h = db.prepare('SELECT id FROM holdings WHERE ticker = ? AND user_id = ?').get(ticker, userId);
   if (!h) return [];
   return db.prepare('SELECT shares, price_per_share, date_bought FROM lots WHERE holding_id = ?').all(h.id);
 }
@@ -267,9 +288,83 @@ function lotsForTicker(db, ticker) {
 (async () => {
   const db = await dbPromise;
 
+  // ── Auth routes ───────────────────────────────────────────────────────────
+  app.post('/auth/register', async (req, res) => {
+    let { name, email, password } = req.body || {};
+    name     = String(name || '').trim();
+    email    = String(email || '').trim().toLowerCase();
+    password = String(password || '');
+
+    if (!name) return res.status(400).json({ error: 'Name is required.' });
+    if (!email || !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email))
+      return res.status(400).json({ error: 'A valid email is required.' });
+    if (password.length < 8)
+      return res.status(400).json({ error: 'Password must be at least 8 characters.' });
+
+    const existing = db.prepare('SELECT id FROM users WHERE email = ?').get(email);
+    if (existing) return res.status(409).json({ error: 'Email is already registered.' });
+
+    try {
+      const hash = await bcrypt.hash(password, 12);
+      const info = db.prepare('INSERT INTO users (name, email, password_hash) VALUES (?, ?, ?)')
+        .run(name, email, hash);
+
+      // First-ever user inherits any holdings created before auth existed.
+      const userCount = db.prepare('SELECT COUNT(*) AS c FROM users').get().c;
+      if (userCount === 1) {
+        db.prepare('UPDATE holdings SET user_id = ? WHERE user_id IS NULL').run(info.lastInsertRowid);
+      }
+
+      res.status(201).json({ message: 'Registration successful.' });
+    } catch (e) {
+      console.error('POST /auth/register error:', e.message);
+      res.status(500).json({ error: 'Failed to register.' });
+    }
+  });
+
+  app.post('/auth/login', async (req, res) => {
+    let { email, password } = req.body || {};
+    email    = String(email || '').trim().toLowerCase();
+    password = String(password || '');
+
+    const user = db.prepare('SELECT id, name, email, password_hash FROM users WHERE email = ?').get(email);
+    if (!user) return res.status(401).json({ error: 'Invalid email or password.' });
+
+    const ok = await bcrypt.compare(password, user.password_hash);
+    if (!ok) return res.status(401).json({ error: 'Invalid email or password.' });
+
+    const token = jwt.sign({ id: user.id, name: user.name, email: user.email }, JWT_SECRET, { expiresIn: '7d' });
+    res.cookie('token', token, {
+      httpOnly: true,
+      secure: process.env.NODE_ENV === 'production',
+      sameSite: 'lax',
+      maxAge: 7 * 24 * 60 * 60 * 1000
+    });
+    res.json({ name: user.name, email: user.email });
+  });
+
+  app.post('/auth/logout', (req, res) => {
+    res.clearCookie('token');
+    res.json({ ok: true });
+  });
+
+  app.get('/auth/me', (req, res) => {
+    const token = req.cookies && req.cookies.token;
+    if (!token) return res.status(401).json({ error: 'Not authenticated.' });
+    try {
+      const payload = jwt.verify(token, JWT_SECRET);
+      res.json({ name: payload.name, email: payload.email });
+    } catch (e) {
+      res.status(401).json({ error: 'Invalid or expired session.' });
+    }
+  });
+
+  // All /api/* routes require a valid session.
+  app.use('/api', requireAuth);
+
   // GET all holdings with their lots + cost basis.
   app.get('/api/holdings', (req, res) => {
-    const holdings = db.prepare('SELECT id, ticker, created_at FROM holdings ORDER BY created_at ASC, id ASC').all();
+    const holdings = db.prepare('SELECT id, ticker, created_at FROM holdings WHERE user_id = ? ORDER BY created_at ASC, id ASC').all(req.user.id);
     const lotStmt  = db.prepare(`SELECT ${LOT_COLS} FROM lots WHERE holding_id = ? ORDER BY date_bought ASC, id ASC`);
     const out = holdings.map(h => {
       const lots = lotStmt.all(h.id);
@@ -299,10 +394,11 @@ function lotsForTicker(db, ticker) {
         return res.status(400).json({ error: 'Price per share must be a positive number, or omitted.' });
     }
 
+    const userId = req.user.id;
     const tx = db.transaction(() => {
-      let holding = db.prepare('SELECT id FROM holdings WHERE ticker = ?').get(ticker);
+      let holding = db.prepare('SELECT id FROM holdings WHERE ticker = ? AND user_id = ?').get(ticker, userId);
       if (!holding) {
-        const info = db.prepare('INSERT INTO holdings (ticker) VALUES (?)').run(ticker);
+        const info = db.prepare('INSERT INTO holdings (ticker, user_id) VALUES (?, ?)').run(ticker, userId);
         holding = { id: info.lastInsertRowid };
       }
       db.prepare('INSERT INTO lots (holding_id, shares, price_per_share, date_bought) VALUES (?, ?, ?, ?)')
@@ -312,17 +408,22 @@ function lotsForTicker(db, ticker) {
 
     try {
       const id = tx();
-      res.status(201).json(getHoldingById(db, id));
+      res.status(201).json(getHoldingById(db, id, userId));
     } catch (e) {
       console.error('POST /api/holdings error:', e.message);
       res.status(500).json({ error: 'Failed to save holding.' });
     }
   });
 
-  // DELETE a lot; drop the holding too if no lots remain.
+  // DELETE a lot; drop the holding too if no lots remain. Verifies the lot's
+  // holding belongs to the requesting user before touching anything.
   app.delete('/api/lots/:id', (req, res) => {
     const id  = parseInt(req.params.id, 10);
-    const lot = db.prepare('SELECT holding_id FROM lots WHERE id = ?').get(id);
+    const lot = db.prepare(`
+      SELECT lots.holding_id AS holding_id
+      FROM lots JOIN holdings ON holdings.id = lots.holding_id
+      WHERE lots.id = ? AND holdings.user_id = ?
+    `).get(id, req.user.id);
     if (!lot) return res.status(404).json({ error: 'Lot not found.' });
 
     let holdingRemoved = false;
@@ -344,7 +445,7 @@ function lotsForTicker(db, ticker) {
     const force  = req.query.force === '1' || req.query.force === 'true';
     try {
       const data     = await getDividendData(db, ticker, force);
-      const analysis = computeAnalysis(lotsForTicker(db, ticker), data.dividends);
+      const analysis = computeAnalysis(lotsForTicker(db, ticker, req.user.id), data.dividends);
       res.json({ ...data, analysis });
     } catch (e) {
       console.error('Dividend fetch failed for', ticker, '-', e.message);
@@ -353,6 +454,7 @@ function lotsForTicker(db, ticker) {
   });
 
   // DELETE cache entry for a ticker (forces re-scrape on next fetch).
+  // The cache is shared market data, not per-user, so no ownership check is needed.
   app.delete('/api/cache/:ticker', (req, res) => {
     const ticker = String(req.params.ticker).trim().toUpperCase();
     db.prepare('DELETE FROM dividend_cache WHERE ticker = ?').run(ticker);
@@ -367,7 +469,7 @@ function lotsForTicker(db, ticker) {
     cutoff.setDate(cutoff.getDate() + days);
     const cutoffISO = cutoff.toISOString().slice(0, 10);
     try {
-      const hs = db.prepare('SELECT id, ticker FROM holdings ORDER BY created_at ASC').all();
+      const hs = db.prepare('SELECT id, ticker FROM holdings WHERE user_id = ? ORDER BY created_at ASC').all(req.user.id);
       const results = [];
       for (const h of hs) {
         const row = db.prepare('SELECT data FROM dividend_cache WHERE ticker = ?').get(h.ticker);
@@ -403,7 +505,7 @@ function lotsForTicker(db, ticker) {
   app.get('/api/chart-data', (req, res) => {
     try {
       const today = todayISO();
-      const hs = db.prepare('SELECT id, ticker FROM holdings ORDER BY created_at ASC').all();
+      const hs = db.prepare('SELECT id, ticker FROM holdings WHERE user_id = ? ORDER BY created_at ASC').all(req.user.id);
       const out = {};
       for (const h of hs) {
         const row = db.prepare('SELECT data FROM dividend_cache WHERE ticker = ?').get(h.ticker);

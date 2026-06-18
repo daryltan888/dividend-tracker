@@ -110,10 +110,20 @@ class Db {
 
 // ── Schema ────────────────────────────────────────────────────────────────────
 const SCHEMA = `
+  CREATE TABLE IF NOT EXISTS users (
+    id            INTEGER PRIMARY KEY AUTOINCREMENT,
+    name          TEXT NOT NULL,
+    email         TEXT UNIQUE NOT NULL,
+    password_hash TEXT NOT NULL,
+    created_at    DATETIME DEFAULT CURRENT_TIMESTAMP
+  );
+
   CREATE TABLE IF NOT EXISTS holdings (
     id         INTEGER PRIMARY KEY AUTOINCREMENT,
-    ticker     TEXT NOT NULL UNIQUE,
-    created_at DATETIME DEFAULT CURRENT_TIMESTAMP
+    ticker     TEXT NOT NULL,
+    user_id    INTEGER REFERENCES users(id),
+    created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+    UNIQUE(ticker, user_id)
   );
 
   CREATE TABLE IF NOT EXISTS lots (
@@ -135,6 +145,12 @@ const SCHEMA = `
   CREATE INDEX IF NOT EXISTS idx_lots_holding ON lots(holding_id);
 `;
 
+function columnExists(raw, table, column) {
+  const res = raw.exec(`PRAGMA table_info(${table})`);
+  if (!res.length) return false;
+  return res[0].values.some(row => row[1] === column);
+}
+
 // ── Initialise ────────────────────────────────────────────────────────────────
 // Exported as a Promise<Db>. server.js awaits it once at startup; subsequent
 // accesses are instant since module exports are cached.
@@ -148,6 +164,29 @@ module.exports = (async () => {
 
   // Apply schema (idempotent). Bypass compat exec() to avoid mid-schema saves.
   raw.exec(SCHEMA);
+
+  // Pre-auth databases have a `holdings` table without user_id and with a
+  // global UNIQUE(ticker) constraint. Rebuild it so the same ticker can be
+  // tracked independently by multiple users; existing rows keep user_id NULL
+  // until claimed by the first registered user (see POST /auth/register).
+  if (!columnExists(raw, 'holdings', 'user_id')) {
+    raw.exec('PRAGMA foreign_keys = OFF');
+    raw.exec(`
+      ALTER TABLE holdings RENAME TO holdings_old;
+      CREATE TABLE holdings (
+        id         INTEGER PRIMARY KEY AUTOINCREMENT,
+        ticker     TEXT NOT NULL,
+        user_id    INTEGER REFERENCES users(id),
+        created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+        UNIQUE(ticker, user_id)
+      );
+      INSERT INTO holdings (id, ticker, user_id, created_at)
+        SELECT id, ticker, NULL, created_at FROM holdings_old;
+      DROP TABLE holdings_old;
+    `);
+    raw.exec('PRAGMA foreign_keys = ON');
+  }
+
   fs.writeFileSync(DB_PATH, raw.export());
 
   return db;

@@ -124,6 +124,27 @@ function showToast(msg, type = 'success') {
   }, 3200);
 }
 
+// ── Auth ──────────────────────────────────────────────────────────────────────
+async function checkAuth() {
+  try {
+    const r = await fetch('/auth/me');
+    if (r.status === 401) {
+      window.location.href = '/login.html';
+      return null;
+    }
+    if (!r.ok) throw new Error('Auth check failed');
+    return await r.json();
+  } catch (e) {
+    window.location.href = '/login.html';
+    return null;
+  }
+}
+
+async function logout() {
+  try { await api('POST', '/auth/logout'); } catch { /* ignore */ }
+  window.location.href = '/login.html';
+}
+
 // ── Data loading ──────────────────────────────────────────────────────────────
 async function loadHoldings() {
   try {
@@ -710,6 +731,7 @@ function wireEvents() {
   document.getElementById('add-holding-btn').addEventListener('click', openModal);
   document.getElementById('export-all-btn').addEventListener('click', exportAll);
   document.getElementById('empty-add-btn').addEventListener('click', openModal);
+  document.getElementById('logout-btn').addEventListener('click', logout);
 
   // Modal
   document.getElementById('modal-close').addEventListener('click', closeModal);
@@ -774,8 +796,14 @@ function wireEvents() {
 }
 
 // ── Init ──────────────────────────────────────────────────────────────────────
-function init() {
+async function init() {
   initTheme();
+
+  const me = await checkAuth();
+  if (!me) return; // checkAuth already redirected to /login.html
+
+  const welcome = document.getElementById('navbar-welcome');
+  if (welcome) welcome.textContent = `Welcome, ${me.name}`;
 
   // Set today as default date in modal, restrict future dates
   const dateInput = document.getElementById('m-date');

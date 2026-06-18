@@ -1,0 +1,42 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Log In — SGX Dividend Tracker</title>
+  <link rel="stylesheet" href="style.css" />
+</head>
+<body class="auth-body">
+  <div class="auth-card">
+    <div class="auth-brand">
+      <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+        <polyline points="22 7 13.5 15.5 8.5 10.5 2 17"/>
+        <polyline points="16 7 22 7 22 13"/>
+      </svg>
+      <span>SGX Dividend Tracker</span>
+    </div>
+    <h1 class="auth-title">Welcome back</h1>
+    <p class="auth-sub">Log in to your portfolio</p>
+
+    <form id="login-form" class="auth-form" novalidate>
+      <div class="field">
+        <label class="field-label" for="email">Email</label>
+        <input type="email" id="email" class="field-input" autocomplete="email" required />
+      </div>
+      <div class="field">
+        <label class="field-label" for="password">Password</label>
+        <input type="password" id="password" class="field-input" autocomplete="current-password" required />
+      </div>
+      <p id="auth-error" class="modal-error" style="display:none"></p>
+      <button type="submit" class="btn btn-primary btn-lg auth-submit" id="login-btn">
+        <span id="login-label">Log In</span>
+        <span id="login-spin" class="spin" style="display:none" aria-hidden="true">↻</span>
+      </button>
+    </form>
+
+    <p class="auth-switch">Don't have an account? <a href="/register.html">Sign up</a></p>
+  </div>
+
+  <script src="login.js"></script>
+</body>
+</html>
