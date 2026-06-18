@@ -1,13 +1,20 @@
 'use strict';
 
+require('dotenv').config();
+
 const path      = require('path');
 const fs        = require('fs');
 const initSqlJs = require('sql.js');
 
 // ── Paths ─────────────────────────────────────────────────────────────────────
-const DATA_DIR = path.join(__dirname, 'data');
-if (!fs.existsSync(DATA_DIR)) fs.mkdirSync(DATA_DIR, { recursive: true });
-const DB_PATH = path.join(DATA_DIR, 'dividends.db');
+const DB_PATH = process.env.DATABASE_PATH ||
+  path.join(__dirname, 'data', 'dividends.db');
+console.log('[DB] Using database path:', DB_PATH);
+
+const dbDir = path.dirname(DB_PATH);
+if (!fs.existsSync(dbDir)) {
+  fs.mkdirSync(dbDir, { recursive: true });
+}
 
 // ── Compat layer ──────────────────────────────────────────────────────────────
 // sql.js is an in-memory WASM SQLite port. We persist by calling rawDb.export()
